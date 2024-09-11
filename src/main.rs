@@ -133,6 +133,8 @@ fn main() -> anyhow::Result<()> {
     let out = net.forward(&random_tensor)?;
     println!("out: {:?}", out);
 
+    // todo: MNIST via candle_datasets, figure out dim mismatch error, training loop, weight save/load
+
     Ok(())
 }
 
