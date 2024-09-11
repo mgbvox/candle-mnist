@@ -1,6 +1,5 @@
-use std::process::id;
-use candle_core::{Device, Shape, Tensor, Result, DType};
-use candle_nn::{Conv2d, Dropout, Linear, Module, VarBuilder, Sequential};
+use candle_core::{Device, Tensor, Result, DType, IndexOp, ModuleT};
+use candle_nn::{Conv2d, Dropout, Linear, Module, VarBuilder, Sequential, VarMap};
 use anyhow;
 
 const MODEL_DTYPE: DType = DType::F32;
@@ -15,6 +14,7 @@ pub struct CNNLayer {
     conv: Conv2d,
     linear: Linear,
     dropout: Dropout,
+    train: bool,
 }
 
 
@@ -40,25 +40,43 @@ impl CNNLayer {
             conv,
             linear,
             dropout,
+            train: false,
         })
     }
 }
 
 impl Module for CNNLayer {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        todo!()
+        // get batch size and image dimension
+        let (b_sz, _img_dim) = xs.dims2()?;
+        let xs = xs
+            .reshape((b_sz, 1, 28, 28))?
+            .apply(&self.conv)?
+            .flatten_from(1)?
+            .apply(&self.linear)?
+            .relu()?;
+
+        let xs = self.dropout.forward(&xs, self.train)?;
+        Ok(xs)
     }
 }
 
 
 pub fn build_net<const S: usize>(
     filters: [usize; S],
+    // last element of kernels will be discarded
     kernels: [usize; S],
     linear: [usize; S],
+    // last element of dropout will be discarded
     dropout: [f32; S],
+    n_classes: usize,
     vs: VarBuilder,
 ) -> Result<Sequential> {
-    let seq = candle_nn::sequential::seq();
+    // if S <= 1 {
+    //     return Errs(candle_core::Error::msg("S must be greater than 1".into()));
+    // }
+
+    let mut seq = candle_nn::sequential::seq();
 
     for idx in 0..S - 1 {
         let cnn = CNNLayer::new(
@@ -72,45 +90,56 @@ pub fn build_net<const S: usize>(
             dropout[idx],
         )?;
 
-        seq.add(cnn);
+        seq = seq.add(cnn);
     }
+
+    // classifier head
+    let classifier_head = candle_nn::linear(
+        linear[S - 1],
+        n_classes,
+        vs.clone(),
+    )?;
+
+    seq = seq.add(classifier_head);
 
     Ok(seq)
 }
 
+
+fn main() -> anyhow::Result<()> {
+    let device = default_device();
+    let varmap = VarMap::new();
+    let vars = VarBuilder::from_varmap(&varmap.clone(), MODEL_DTYPE, &device);
+
+    let net = build_net(
+        // layerwise filter count
+        [1, 32, 64, 128],
+        // layerwise kernel size
+        [5, 5, 5, 5],
+        // layerwise cnn linear dims
+        [128, 128, 128, 128],
+        // layerwise dropout rate
+        [0.1, 0.1, 0.1, 0.1],
+        // n_classes
+        10,
+        // varbuilder
+        vars,
+    )?;
+
+    // Create a random tensor of shape (1, 64, 64)
+    let ztensor = Tensor::zeros((64, 64), MODEL_DTYPE, &device)?;
+    let random_tensor = ztensor.rand_like(0.0, 10.0)?;
+
+    let out = net.forward(&random_tensor)?;
+    println!("out: {:?}", out);
+
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod tests {
-    use candle_core::DType;
-    use candle_nn::{Sequential, VarMap};
     use super::*;
-
-
-    fn build_cnn_layer() -> Result<CNNLayer> {
-        let device = default_device();
-        let varmap = VarMap::new();
-        let vars = VarBuilder::from_varmap(&varmap.clone(), MODEL_DTYPE, &device);
-
-
-        let layer = CNNLayer::new(vars.clone(), "foo".into(), 5, 5, 5, 5, 5, 0.5)?;
-
-        Ok(layer)
-    }
-
-    #[test]
-    fn test_build_cnn_layer() -> anyhow::Result<()> {
-        let layer = build_cnn_layer()?;
-
-        println!("layer: {:?}", layer);
-        Ok(())
-    }
-
-    #[test]
-    fn test_cnn_forward() -> anyhow::Result<()> {
-        let layer = build_cnn_layer()?;
-        // let input
-        Ok(())
-    }
-
 
     #[test]
     fn test_build_sequential() -> anyhow::Result<()> {
@@ -127,31 +156,12 @@ mod tests {
             [128, 128, 128, 128],
             // layerwise dropout rate
             [0.1, 0.1, 0.1, 0.1],
+            // n_classes
+            10,
             // varbuilder
             vars,
-        );
-        // let cnn = build_cnn_layer()?;
-        // net.add(cnn);
-        // println!("{:?}", net.);
+        )?;
 
         Ok(())
     }
-}
-
-
-fn main() -> anyhow::Result<()> {
-    if let device = Device::new_metal(0)? {
-        println!("Device created.");
-        let a = Tensor::randn(0f32, 1., (2, 3), &device)?;
-        let b = Tensor::randn(0f32, 1., (3, 4), &device)?;
-
-        let c = a.matmul(&b)?;
-
-
-        println!("{:?}", c);
-    } else {
-        println!("Could not create metal device.");
-    }
-
-    Ok(())
 }
