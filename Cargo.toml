@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.87"
 candle-core = { version = "0.6.0", features = ["metal", "accelerate"] }
+candle-datasets = "0.6.0"
+candle-nn = { version = "0.6.0", features = ["accelerate", "metal"] }
