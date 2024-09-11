@@ -1,5 +1,6 @@
+use std::process::id;
 use candle_core::{Device, Shape, Tensor, Result, DType};
-use candle_nn::{Conv2d, Dropout, Linear, Module, VarBuilder};
+use candle_nn::{Conv2d, Dropout, Linear, Module, VarBuilder, Sequential};
 use anyhow;
 
 const MODEL_DTYPE: DType = DType::F32;
@@ -9,36 +10,8 @@ fn default_device() -> Device {
 }
 
 
-enum ModelConfig {
-    CNNLayerConfig,
-}
-
-#[derive(Debug)]
-pub struct LinearConfig {
-    in_shape: usize,
-    out_shape: usize,
-}
-
-
-#[derive(Debug)]
-pub struct ConvConfig {
-    in_shape: usize,
-    out_shape: usize,
-    kernel_size: usize,
-}
-
-#[derive(Debug)]
-pub struct CNNLayerConfig {
-    layer_name: String,
-    conv_layer: ConvConfig,
-    linear_config: LinearConfig,
-    dropout: f32,
-}
-
-
 #[derive(Debug)]
 pub struct CNNLayer {
-    config: CNNLayerConfig,
     conv: Conv2d,
     linear: Linear,
     dropout: Dropout,
@@ -46,39 +19,69 @@ pub struct CNNLayer {
 
 
 impl CNNLayer {
-    fn new(vs: VarBuilder, config: CNNLayerConfig) -> Result<Self> {
+    fn new(vs: VarBuilder, layer_name: String, cnn_in: usize, cnn_out: usize, kernel_size: usize, linear_in: usize, linear_out: usize, dropout: f32) -> Result<Self> {
         let conv = candle_nn::conv2d(
-            config.conv_layer.in_shape,
-            config.conv_layer.out_shape,
-            config.conv_layer.kernel_size,
+            cnn_in,
+            cnn_out,
+            kernel_size,
             Default::default(),
-            vs.push_prefix(format!("{}-conv2D", config.layer_name)),
+            vs.push_prefix(format!("{}-conv2D", layer_name)),
         )?;
 
         let linear = candle_nn::linear(
-            config.linear_config.in_shape,
-            config.linear_config.out_shape,
-            vs.push_prefix(format!("{}-linear", config.layer_name)),
+            linear_in,
+            linear_out,
+            vs.push_prefix(format!("{}-linear", layer_name)),
         )?;
 
-        let dropout = candle_nn::Dropout::new(config.dropout);
+        let dropout = candle_nn::Dropout::new(dropout);
 
         Ok(Self {
-            config,
             conv,
             linear,
             dropout,
         })
     }
+}
+
+impl Module for CNNLayer {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         todo!()
     }
 }
 
+
+pub fn build_net<const S: usize>(
+    filters: [usize; S],
+    kernels: [usize; S],
+    linear: [usize; S],
+    dropout: [f32; S],
+    vs: VarBuilder,
+) -> Result<Sequential> {
+    let seq = candle_nn::sequential::seq();
+
+    for idx in 0..S - 1 {
+        let cnn = CNNLayer::new(
+            vs.clone(),
+            format!("CNN{}", idx),
+            filters[idx],
+            filters[idx + 1],
+            kernels[idx],
+            linear[idx],
+            linear[idx + 1],
+            dropout[idx],
+        )?;
+
+        seq.add(cnn);
+    }
+
+    Ok(seq)
+}
+
 #[cfg(test)]
 mod tests {
     use candle_core::DType;
-    use candle_nn::VarMap;
+    use candle_nn::{Sequential, VarMap};
     use super::*;
 
 
@@ -87,22 +90,8 @@ mod tests {
         let varmap = VarMap::new();
         let vars = VarBuilder::from_varmap(&varmap.clone(), MODEL_DTYPE, &device);
 
-        let config = CNNLayerConfig {
-            layer_name: "foo".to_string(),
-            conv_layer: ConvConfig {
-                in_shape: 5,
-                out_shape: 5,
-                kernel_size: 5,
-            },
-            linear_config: LinearConfig {
-                in_shape: 5,
-                out_shape: 5,
-            },
-            dropout: 0.5,
-        };
 
-
-        let layer = CNNLayer::new(vars.clone(), config)?;
+        let layer = CNNLayer::new(vars.clone(), "foo".into(), 5, 5, 5, 5, 5, 0.5)?;
 
         Ok(layer)
     }
@@ -119,6 +108,32 @@ mod tests {
     fn test_cnn_forward() -> anyhow::Result<()> {
         let layer = build_cnn_layer()?;
         // let input
+        Ok(())
+    }
+
+
+    #[test]
+    fn test_build_sequential() -> anyhow::Result<()> {
+        let device = default_device();
+        let varmap = VarMap::new();
+        let vars = VarBuilder::from_varmap(&varmap.clone(), MODEL_DTYPE, &device);
+
+        let net = build_net(
+            // layerwise filter count
+            [1, 32, 64, 128],
+            // layerwise kernel size
+            [5, 5, 5, 5],
+            // layerwise cnn linear dims
+            [128, 128, 128, 128],
+            // layerwise dropout rate
+            [0.1, 0.1, 0.1, 0.1],
+            // varbuilder
+            vars,
+        );
+        // let cnn = build_cnn_layer()?;
+        // net.add(cnn);
+        // println!("{:?}", net.);
+
         Ok(())
     }
 }
